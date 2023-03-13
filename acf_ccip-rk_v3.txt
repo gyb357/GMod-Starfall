@@ -1,0 +1,171 @@
+--@name ACF CCIP-RK V3 (Server)
+--@author RuBid
+--@shared
+
+
+if SERVER then
+    // ----- Option ----- //
+    MuzzleVel = 0
+    
+    // Analysis
+    Rk   = 2
+    Cost = 500
+    Dt   = 0.015
+    
+    
+    // ----- Constant ----- //
+        Gv = physenv.getGravity()
+        T  = game.getTickInterval()
+        
+        MtI = 39.3701
+        Dt2 = Dt/2
+        Dt6 = Dt/6
+        
+        AmmoC  = 0
+        Change = {}
+        
+        
+    // ----- Wire ----- //
+        wire.adjustInputs({"Gun", "Analysis"}, {"entity", "number"})
+        wire.adjustOutputs({"Pos", "ToF"}, {"vector", "number"})
+        
+        Gun      = wire.ports.Gun
+        Analysis = wire.ports.Analysis
+        
+        
+    // ----- Function ----- //
+    local function parentBase(E)
+        while true do
+            if E:getParent():isValid() then
+                E = E:getParent()
+                
+                if not E:getParent():isValid() then return E end
+            else
+                return E
+            end
+        end
+    end
+    
+    local function acfMuzzlePos(E)
+        return E:getAttachment(1)
+    end
+    
+    local function holoCreate(P, E)
+        if holograms.canSpawn() then
+            local H = holograms.create(P, Angle(), "models/holograms/cube.mdl", Vector(1, 1, 1))
+            
+            if E:isValid() then
+                H:setParent(E)
+            end
+            return H
+        end
+    end
+    
+    local function if2(A, B, C)
+        if A then return B else return C end
+    end
+    
+    local function changed(T, N, V)
+        if T[N] ~= V then
+            T[N] = V
+            return true
+        else
+            return false
+        end
+    end
+    
+    
+    // ----- Preprocess ----- //
+    if Gun:isValid() then
+        Base = parentBase(Gun)
+        
+        local Mpos   = acfMuzzlePos(Gun)
+              Muzzle = holoCreate(Mpos, Gun)
+            
+            
+        // Runge Kutta Initialize
+        Pos   = Vector()
+        Time   = 0
+        Pf    = Muzzle:getPos()
+        Vf    = Gun:acfMuzzleVel()*MtI*Gun:getForward()
+        Trace = trace.trace(Pf, Pf)
+    end
+    
+    
+    // ----- Process ----- //
+    timer.create("runOnTick", 0.1, 0, function()
+        if Gun:isValid() then
+            // Position element
+                  VoB  = Base:getVelocity()
+            local VoBt = VoB*T
+                  Gpos = Gun:getMassCenter() + VoBt
+                  Mpos = Muzzle:getPos()     + VoBt
+                
+                
+            // Angle element
+            Ang = Gun:getAngles()
+            Fwd = Gun:getForward()
+            
+            
+            // Drag coefficient
+            local AmmoC = Gun:acfAmmoCount()
+            
+            if changed(Change, "AmmoC", AmmoC) then
+                local Mv = Gun:acfMuzzleVel()
+                      V0 = Mv*MtI
+                      Cd = Gun:acfDragCoef()
+            end
+        end
+        
+        
+        if V0 ~= nil and Analysis > 0 then
+            if changed(Change, "Ang", Ang) then Loop = true end
+            
+            
+            for I = 1, Cost do
+                // Before state
+                local P1 = Pf
+                local V1 = Vf
+                local Vc = V1:getLength()*Cd    local A1 = Gv - V1*Vc
+                
+                
+                // Runge Kutta algorithm
+                if Rk == 2 then
+                    local V2 = V1 + A1*Dt       local A2 = Gv - V2*Vc
+                          Pf = Pf + Dt2*(V1 + V2)
+                          Vf = Vf + Dt2*(A1 + A2)
+                elseif Rk == 4 then
+                    local V2 = V1 + A1*Dt2      local A2 = Gv - V2*Vc
+                    local V3 = V1 + A2*Dt2      local A3 = Gv - V3*Vc
+                    local V4 = V1 + A3*Dt       local A4 = Gv - V4*Vc
+                          Pf = Pf + Dt6*(V1 + 2*(V2 + V3) + V4)
+                          Vf = Vf + Dt6*(A1 + 2*(A2 + A3) + A4)
+                end
+                
+                
+                // Time of flight
+                Time = Time + Dt
+                
+                
+                // Raycast
+                local Trace = trace.line(P1, Pf)
+                      End   = Trace["Hit"]
+                    
+                    
+                // Loop Initialize
+                if End == true then
+                    wire.ports.ToF = Time
+                    
+                    Pos  = Trace["HitPos"]
+                    Time = 0
+                    Pf   = Muzzle:getPos()
+                    Vf   = V0*Fwd + VoB
+                end
+                
+                
+                wire.ports.Pos = Pos
+            end
+        end
+    end)
+end
+

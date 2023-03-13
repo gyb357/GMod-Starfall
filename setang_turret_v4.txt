@@ -1,0 +1,192 @@
+--@name SetAng Turret V4
+--@author
+--@shared
+
+
+if SERVER then
+    // ----- Wire ----- //
+    local Inputs = {
+        {"Pod",      "Cam",      "Base",   "Turret", "Gun",    "FCS",   "View",   "Zoom",   "Hold"},
+        {"wirelink", "wirelink", "entity", "entity", "entity", "angle", "number", "number", "number"}
+    }
+    local Outputs = {
+        {"FOV",    "AimPos"},
+        {"number", "vector"}
+    }
+    
+    
+    wire.adjustInputs(Inputs[1],   Inputs[2])
+    wire.adjustOutputs(Outputs[1], Outputs[2])
+    
+    
+    local Pod    = wire.ports.Pod
+    local Cam    = wire.ports.Cam
+    local Base   = wire.ports.Base
+    local Turret = wire.ports.Turret
+    local Gun    = wire.ports.Gun
+    
+    
+    // ----- Option ----- //
+    local Parent  = 1
+    
+    
+    local Speed   = 1.0
+    local AngSet  = {20, 10, 360}
+    local CamSet  = {Vector(0, 0, 100), 300}
+    local ZoomSet = {80, 10, 3}
+    
+    
+    // ----- Constant ----- //
+        local InitAng   = Angle(0, 90, 0)
+        local Changed   = {}
+        local ZoomScale = (ZoomSet[1] - ZoomSet[2])/ZoomSet[3]
+        
+        
+        local Spd = Angle(Speed)
+        local Ele = Angle(AngSet[1], AngSet[3]/2, 0)
+        local Dep = Angle(AngSet[2], AngSet[3]/2, 0)
+        
+        
+        local AimPos = Vector()
+        
+        
+    // ----- Function ----- //
+    local function if2(A, B, C)
+        if A then
+            return B
+        else
+            return C
+        end
+    end
+    
+    local function floor(V)
+        return math.floor(V)
+    end
+    
+    local function changed(N, V)
+        if Changed[N] ~= V then
+            Changed[N] = V
+            return true
+        else
+            return false
+        end
+    end
+    
+    local function boolToNum(V)
+        if V == true then
+            return 1
+        else
+            return 0
+        end
+    end
+    
+    local function clamp(V, Min, Max)
+        local X = math.clamp(V[1], Min[1], Max[1])
+        local Y = math.clamp(V[2], Min[2], Max[2])
+        local Z = math.clamp(V[3], Min[3], Max[3])
+        return Angle(X, Y, Z)
+    end
+    
+    
+    // ----- Preprocess ----- //
+    if isValid(Base, Turret, Gun) then
+        local Ang = {Base:getAngles()[2], Turret:getAngles()[2], Gun:getAngles()[2]}
+        local Can = 0
+        print(Ang[1], Ang[2], Ang[3])
+        
+        
+        local P1 = if2(Can, Turret, nil)
+        local P2 = if2(Can, Base,   nil)
+        
+        
+           Gun:setParent(P1)
+        Turret:setParent(P2)
+    end
+    
+    
+    // ----- Process ----- //
+    timer.create("Interval", 0, 0, function()
+        if isValid(Pod, Cam, Base, Turret, Gun) then
+            Active = Pod["Active"]
+            
+            
+            local Bpos   = Base:getPos()
+            local CamPos = Bpos + CamSet[1]
+            
+            
+            if changed("Active", Active) and Active == 1 then
+                Cam["Activated"] = 1
+                Cam["Parent"]    = Base
+                Cam["Distance"]  = CamSet[2]
+                Cam["FOV"]       = ZoomSet[1]
+                Cam["Position"]  = CamPos
+                
+                
+                Chair   = Pod["Entity"]
+                Driver  = Pod["Driver"]
+                ZoomIdx = 0
+            end
+            
+            
+            if Active == 1 then
+                View = wire.ports.View
+                Zoom = wire.ports.Zoom
+                Hold = wire.ports.Hold
+                FCS  = wire.ports.FCS
+                
+                
+                if changed("View", View) and View == 1 then
+                          Vmod = !Vmod
+                    local Dist = CamSet[2]*boolToNum(Vmod)
+                    
+                    
+                    Cam["Distance"] = Dist
+                end
+                
+                
+                if changed("Zoom", Zoom) and Zoom == 1 then
+                          ZoomIdx = ZoomIdx + if2(ZoomIdx > ZoomSet[3] - 1, -ZoomSet[3], 1)
+                    local FOV     = ZoomSet[1] - ZoomScale*ZoomIdx
+                    
+                    
+                    Cam["FOV"]     = FOV
+                    wire.ports.FOV = FOV
+                end
+                
+                
+                if changed("Hold", Hold) and Hold == 1 then
+                    Hmod = !Hmod
+                end
+                
+                
+                if Hmod == false then
+                    local Eye    = Chair:worldToLocalAngles(Driver:getEyeAngles())
+                    local Trace  = trace.trace(CamPos, CamPos + Eye:getForward()*1000000, Gun)
+                          AimPos = Trace["HitPos"]
+                        
+                        
+                    wire.ports.AimPos = AimPos
+                end
+            else
+                Hmod = true
+            end
+            
+            
+            local AmG     = (AimPos - Gun:getPos()):getAngle()
+            local HoldAng = if2(Active == 0, Base:getAngles(), AmG)
+            local GunAng  = if2(Hmod == true, HoldAng, AmG)
+            
+            
+            if Parent == 1 then
+                local SpdClamp = clamp(Gun:worldToLocalAngles(GunAng), -Spd, Spd)
+                local ToWorld  = Gun:localToWorldAngles(SpdClamp)
+                local AngClamp = clamp(Base:worldToLocalAngles(ToWorld), -Ele, Dep)
+                
+                
+                Gun:setAngles(Turret:localToWorldAngles(Angle(AngClamp[1], 0, 0)))
+                Turret:setAngles(Base:localToWorldAngles(Angle(0, AngClamp[2], 0)))
+            end
+        end
+    end)
+end
+

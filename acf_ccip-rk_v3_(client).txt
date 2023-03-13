@@ -1,0 +1,295 @@
+--@name ACF CCIP-RK V3 (Client)
+--@author RuBid
+--@shared
+
+
+// ----- Global Constant ----- //
+    local Changed = {}
+    local Tick    = game.getTickInterval()
+    
+    
+// ----- Global Function ----- //
+local function if2(A, B, C)
+    return A and B or C
+end
+
+local function isValidTable(T)
+    if not T or #T == 0 then
+        return false
+    else
+        for I, V in ipairs(T) do
+            if not isValid(V) then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+local function send(N, T, P)
+    net.start(N)
+    net.writeTable(T)
+    net.send(P)
+end
+
+local function receive(N)
+    local T = {}
+    
+    net.receive(N, function()
+        local R = net.readTable()
+        
+        if R then
+            for I, V in ipairs(R) do
+                T[I] = V
+            end
+        end
+    end)
+    return T
+end
+
+local function changed(N, V)
+    local Old        = Changed[N]
+          Changed[N] = V
+        
+    return Old ~= V
+end
+
+
+if SERVER then
+    // ----- Wire ----- //
+    local Inputs = {
+        {"Gun",    "Target", "Ammo",   "Analysis"},
+        {"entity", "entity", "number", "number"}
+    }
+    local Outputs = {
+        {"EndPos", "ToF"},
+        {"vector", "number"}
+    }
+    wire.adjustInputs(Inputs[1],   Inputs[2])
+    wire.adjustOutputs(Outputs[1], Outputs[2])
+    
+    
+    local Gun = wire.ports.Gun
+    
+    
+    // ----- Constant ----- //
+        local Own      = owner()
+        local Ammo     = 0
+        local Mv       = 0
+        local Cd       = 0
+        local Analysis = 0
+        
+        
+    // ----- Function ----- //
+    local function getBaseParent(E)
+        while isValid(E:getParent()) do
+            E = E:getParent()
+        end
+        return E
+    end
+    
+    local function holoCreate(P, E)
+        if holograms.canSpawn() then
+            local H = holograms.create(P, Angle(), "models/holograms/cube.mdl", Vector())
+            
+            if isValid(E) then
+                H:setParent(E)
+            end
+            return H
+        end
+    end
+    
+    local function getAttachment2(E, V)
+        local A = E:getAttachment(V)
+        return if2(A, A, E:getPos())
+    end
+    
+    
+    // ----- Preprocess ----- //
+    if isValid(Gun) then
+        local Base   = getBaseParent(Gun)
+        local Muzzle = holoCreate(getAttachment2(Gun, 1), Gun)
+        
+        
+        Mv = Gun:acfMuzzleVel()
+        Cd = Gun:acfDragCoef()
+        
+        
+        if isValidTable({Base, Muzzle}) then
+            hook.add("ClientInitialized", "", function()
+                send("A", {Gun, Base, Muzzle}, Own)
+                send("C", {Mv, Cd},            Own)
+                send("D", {Analysis},          Own)
+            end)
+        end
+    end
+    
+    
+    // ----- Process ----- //
+    local E = receive("E")
+    
+    
+    timer.create("Interval", Tick, 0, function()
+        if isValid(Gun) then
+            -- Inputs
+            local Target   = wire.ports.Target
+                  Ammo     = wire.ports.Ammo
+                  Analysis = wire.ports.Analysis
+            
+            
+            -- Ammo data
+            --local Ammo = Gun:acfAmmoCount()
+            Mv = Gun:acfMuzzleVel()
+            Cd = Gun:acfDragCoef()
+            
+            
+            -- Send data to client
+            if changed("Target",   Target)   then send("B", {Target},   Own) end
+            if changed("Ammo",     Ammo)     then send("C", {Mv, Cd},   Own) end
+            if changed("Analysis", Analysis) then send("D", {Analysis}, Own) end
+        end
+        
+        
+        -- Received data from client
+        EndPos, ToF = E[1], E[2]
+        
+        
+        if EndPos and ToF then
+            wire.ports.EndPos = EndPos
+            wire.ports.ToF    = ToF
+        end
+    end)
+end
+
+
+if CLIENT then
+    // ----- Option ----- //
+    local Cost   = 10
+    local MaxCPU = 5000
+    local Dt     = 0.1
+    
+    
+    // ----- Constant ----- //
+        local Gv   = physenv.getGravity()
+        local MtI  = 39.3701
+        local RK   = {}
+        local Time = 0
+        
+        
+    // ----- Function ----- //
+    local function initializeRK(P, V, F, S)
+        return {P, V*MtI*F + S}
+    end
+    
+    local function accel(V, Vc)
+        return Gv - V*Vc
+    end
+    
+    local function velocity(V, A, Dt)
+        return V + A*Dt
+    end
+    
+    local function update(V1, V2, V3, V4, Dt)
+        return (Dt/6)*(V1 + 2*(V2 + V3) + V4)
+    end
+    
+    local function rk4(Prev, Cd, Dt)
+        local P1  = Prev[1]
+        local V1  = Prev[2]
+        local Vc  = V1:getLength()*Cd
+        
+        local A1  = accel(V1, Vc)
+        local V2  = velocity(V1, A1, Dt/2)
+        local A2  = accel(V2, Vc)
+        local V3  = velocity(V1, A2, Dt/2)
+        local A3  = accel(V3, Vc)
+        local V4  = velocity(V1, A3, Dt)
+        local A4  = accel(V4, Vc)
+        return {
+            P1 + update(V1, V2, V3, V4, Dt),
+            V1 + update(A1, A2, A3, A4, Dt)
+        }
+    end
+    
+    local function sqrt(V)
+        return math.sqrt(V[1]^2 + V[2]^2)
+    end
+    
+    
+    // ----- Process ----- //
+    local A = receive("A")
+    local B = receive("B")
+    local C = receive("C")
+    local D = receive("D")
+    
+    
+    timer.create("Interval", Tick, 0, function()
+        -- Received data from server
+        local Gun, Base, Muzzle = A[1], A[2], A[3]
+        local Target            = B[1]
+        local Mv, Cd            = C[1], C[2]
+        local Analysis          = D[1]
+        
+        
+        if isValidTable({Gun, Base, Muzzle}) and Mv and Cd and Analysis then
+            local VoB  = Base:getVelocity()
+            local Mpos = Muzzle:getPos() + VoB*Tick
+            local Fwd  = Gun:getForward()
+            
+            
+            if changed("Fwd", Fwd) then
+                Loop = true
+            end
+            
+            
+            -- Initialize first step
+            if #RK == 0 then
+                RK = initializeRK(Mpos, Mv, Fwd, VoB)
+            end
+            
+            
+            if Analysis > 0 and Loop then
+                for I = 1, Cost do
+                    -- Update
+                    local Prev = RK
+                          RK   = rk4(Prev, Cd, Dt)
+                          Time = Time + Dt
+                        
+                        
+                    local Trace = trace.trace(Prev[1], RK[1], Gun)
+                    local Hit   = Trace.Hit
+                    
+                    
+                    -- Raycast
+                    if isValid(Target) then
+                        local Tpos = Target:getPos()
+                        local L1   = sqrt(Mpos - RK[1])
+                        local L2   = sqrt(Mpos - Tpos)
+                              End  = if2(L1 > L2, true, Hit)
+                    else
+                        End = Hit
+                    end
+                    
+                    
+                    -- Initialize loop
+                    if End then
+                        RK     = initializeRK(Mpos, Mv, Fwd, VoB)
+                        EndPos = Trace.HitPos
+                        ToF    = Time
+                        Time   = 0
+                        Loop   = false
+                    end
+                    
+                    
+                    if quotaAverage() > MaxCPU then
+                        break
+                    end
+                end
+                
+                
+                send("E", {EndPos, ToF}, Own)
+            end
+        end
+    end)
+end
+
