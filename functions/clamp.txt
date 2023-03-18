@@ -7,7 +7,7 @@ local function clamp(V, Min, Max)
     local Z = math.clamp(V[3], Min[3], Max[3])
 
     if type(V) == "Vector" then
-        return Vecgtor(X, Y, Z)
+        return Vector(X, Y, Z)
     elseif type(V) == "Angle" then
         return Angle(X, Y, Z)
     end
