@@ -1,0 +1,7 @@
+--@name isangle
+
+
+local function isangle(V)
+    return type(V) == "Angle"
+end
+

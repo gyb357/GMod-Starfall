@@ -1,0 +1,7 @@
+--@name isvector
+
+
+local function isvector(V)
+    return type(V) == "Vector"
+end
+

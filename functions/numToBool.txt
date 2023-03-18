@@ -1,0 +1,7 @@
+--@name numToBool
+
+
+local function numToBool(V)
+    return V ~= 0
+end
+

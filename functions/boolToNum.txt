@@ -1,0 +1,7 @@
+--@name boolToNum
+
+
+local function boolToNum(V)
+    return V and 1 or 0
+end
+

@@ -1,13 +1,15 @@
 --@name clamp
---@author
---@shared
 
 
-// ----- Global Function ----- //
 local function clamp(V, Min, Max)
-    return Angle(
-        math.Clamp(V[1], Min[1], Max[1]),
-        math.Clamp(V[2], Min[2], Max[2]),
-        math.Clamp(V[3], Min[3], Max[3])
-    )
+    local X = math.clamp(V[1], Min[1], Max[1])
+    local Y = math.clamp(V[2], Min[2], Max[2])
+    local Z = math.clamp(V[3], Min[3], Max[3])
+
+    if type(V) == "Vector" then
+        return Vecgtor(X, Y, Z)
+    elseif type(V) == "Angle" then
+        return Angle(X, Y, Z)
+    end
 end
+
