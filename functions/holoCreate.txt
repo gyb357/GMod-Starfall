@@ -1,0 +1,14 @@
+--@name holoCreate
+
+
+local function holoCreate(P, A, M, S, E)
+    if holograms.canSpawn() then
+        local H = holograms.create(P, A, M, S)
+        
+        if isValid(E) then
+            H:setParent(E)
+        end
+        return H
+    end
+end
+
