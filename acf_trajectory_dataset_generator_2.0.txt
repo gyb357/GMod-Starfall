@@ -1,0 +1,383 @@
+--@name ACF Trajectory Dataset Generator 2.0
+--@author RuBid
+--@shared
+--@model models/props_lab/harddrive01.mdl
+
+
+--[[
+    This is ACF-3-based trajectory dataset generator.
+    Perform numerical analysis using RK4 on a 2D coordinate plane and save the trajectory data to 'CSV' file.
+    This datasets can be used for data analysis, machine learning or deep learning.
+    
+    
+    Update:
+           2.0
+         - Changed the extension of the dataset file from 'JSON' to 'CSV'. Reduced the size of the dataset file by simplifying the recording format.
+         - Data is now stored in chunks. Reduced file write overhead to speed up overall operations.
+         - You can generate datasets for multiple ammunition.
+        
+        
+    Modifiable settings:
+           Name                Default  Description
+         - interval:           0.01     Starfall tick interval.                                      (Adjust to your computer's performance.)
+         - delta_time:         0.01     RK4 time step.                                               (Smaller values increase accuracy and computation time.)
+         - delta_theta:        0.01     Angle increment.
+         - start_theta:        -90      Initial launch angle.
+         - end_theta:          90       Final launch angle.
+         - max_distance:       32768    Maximum distance for trajectory calculation.                 (The maximum map size of the source engine is 32768.)
+         - cpu_usage_limit:    0.8      Limit for CPU usage to prevent tick quota.                   (Adjust to your computer's performance.)
+         - save_step_point:    500      Number of steps after which data is saved to a file.         (Increment by 1 each time the theta changes. When step reaches this value, save the file and create another.)
+         - max_row_string:     65535    Maximum length of the row string before saving to a file.    (Maximum byte size of a chunk (string length) of data to be memorized.)
+        
+        
+    CSV columns:
+        theta, x, y, time
+        
+        
+    Warning:
+        If you are doing something else (the screen is not a game screen), the calculation may be slower.
+]]--
+
+
+----- Global settings -----
+local interval = 0.01
+
+
+----- Global constants -----
+local ply = player()
+local own = owner()
+
+
+----- Global functions -----
+local function send_data(name, tab, ply)
+    local tmp = {}
+    tmp[name] = tab
+    net.start("send")
+    net.writeTable(tmp)
+    net.send(ply)
+end
+
+
+if SERVER then
+    ----- Wirelink -----
+    wire.adjustInputs({"Ammo"}, {"array"})
+    wire.adjustOutputs({"Step", "Theta"}, {"n", "n"})
+    
+    
+    ----- Constants -----
+    local ammo = wire.ports.Ammo or {}
+    local receive = {}
+    
+    
+    ----- Network -----
+    net.receive("send", function()
+        for name, val in pairs(net.readTable()) do
+            receive[name] = val
+        end
+    end)
+    
+    
+    ----- Functions -----
+    local function is_valid_number(tab)
+        if not tab or #tab == 0 then
+            return false
+        end
+        for _, val in pairs(tab) do
+            if val == nil or val == 0 then
+                return false
+            end
+        end
+        return true
+    end
+    
+    
+    ----- Preprocess -----
+    if next(ammo) ~= nil then
+        local data = {
+            muzzle_vel = {},
+            drag_coef = {},
+            caliber = {},
+            count = table.count(ammo)
+        }
+        for _, val in pairs(ammo) do
+            local tmp = {val:acfMuzzleVel(), val:acfDragCoef(), val:acfCaliber()}
+            
+            if is_valid_number(tmp) then
+                table.insert(data.muzzle_vel, tmp[1])
+                table.insert(data.drag_coef, tmp[2])
+                table.insert(data.caliber, tmp[3])
+            end
+        end
+        
+        hook.add("ClientInitialized", "", function(ply)
+            if ply == own then
+                send_data("init", data, ply)
+            end
+        end)
+    end
+    
+    
+    ----- Process -----
+    timer.create("interval", interval, 0, function()
+        local data = receive["data"]
+        
+        if is_valid_number(data) then
+            wire.ports.Step = data[1]
+            wire.ports.Theta = data[2]
+        end
+    end)
+end
+
+
+if CLIENT and ply == own then
+    ----- Settings -----
+    local delta_time = 0.01
+    local delta_theta = 0.01
+    local start_theta = -90
+    local end_theta = 90
+    local max_distance = 32768
+    local cpu_usage_limit = 0.8
+    local save_step_point = 500
+    local max_row_string = 65535
+    
+    
+    ----- Constants -----
+    local max_distance_x = math.sqrt(3*max_distance^2)
+    local max_distance_y = -max_distance
+    
+    -- Functions & utils
+    local meter_to_inch = 39.3701
+    local g = Vector(0, physenv.getGravity()[3], 0)
+    local dt2 = delta_time/2
+    local dt6 = delta_time/6
+    local receive = {}
+    local this = chip()
+    
+    -- Decimal places
+    local round = 0
+    
+    -- Ammo data
+    local muzzle_vel = 0
+    local drag_coef = 0
+    local caliber = 0
+    local count = 0
+    
+    -- RK4
+    local run = false
+    local epoch = 0
+    local step = 0
+    local theta = 0
+    local state = {Vector(), Vector(), 0}
+    
+    -- File
+    local file_idx = 0
+    local col = ""
+    local row = ""
+    
+    -- Sound
+    local process_sound = sound.create(this, "hl1/ambience/computalk2.wav")
+    
+    -- Debug
+    local times = {}
+    local total_start_time = 0
+    local mini_start_time = 0
+    
+    
+    ----- network -----
+    net.receive("send", function()
+        for name, val in pairs(net.readTable()) do
+            receive[name] = val
+        end
+    end)
+    
+    
+    ----- functions -----
+    local function get_decimal_places(num)
+        return string.len(tostring(num):match("%.(%d+)")) + 1
+    end
+    
+    local function ternary_operator(a, b, c)
+        return a and b or c
+    end
+    
+    local function initialize_state(theta, muzzle_vel)
+        local pos = Vector(0, 0, 0)
+        local vel = Vector(math.cos(math.rad(theta)), math.sin(math.rad(theta)), 0)*(muzzle_vel*meter_to_inch)
+        return {pos, vel, 0}
+    end
+    
+    local function get_file_path(caliber, muzzle_vel, idx)
+        local file_dir = math.round(caliber, 1) .. "mm_" .. math.round(muzzle_vel, 1) .. "ms"
+        local file_name = file_dir .. "_" .. idx .. ".csv"
+        local file_path = file_dir .. "/" .. file_name
+        return file_dir, file_name, file_path
+    end
+    
+    local function create_file(file_dir, file_path, content)
+        file.createDir(file_dir)
+        file.write(file_path, content)
+    end
+    
+    local function rk4(state, drag_coef)
+        local p1 = state[1]
+        local v1 = state[2]
+        local t1 = state[3]
+        
+        local vd = v1:getLength()*drag_coef
+        
+        local a1 = g - vd*v1
+        local v2 = v1 + a1*dt2
+        local a2 = g - vd*v2
+        local v3 = v1 + a2*dt2
+        local a3 = g - vd*v3
+        local v4 = v1 + a3*dt2
+        local a4 = g - vd*v4
+        
+        local p = p1 + dt6*(v1 + 2*(v2 + v3) + v4)
+        local v = v1 + dt6*(a1 + 2*(a2 + a3) + a4)
+        local t = t1 + delta_time
+        return {p, v, t}
+    end
+    
+    local function append_file(file_path, content)
+        file.append(file_path, content)
+        return ""
+    end
+    
+    local function get_time(current_time, start_time)
+        return math.round(current_time - start_time, 3)
+    end
+    
+    
+    ----- preprocess -----
+    timer.simple(0.5, function()
+        local init = receive["init"]
+        
+        if init then
+            -- Decimal places
+            local delta_theta_dp = get_decimal_places(delta_theta)
+            local delta_time_dp = get_decimal_places(delta_time)
+            round = ternary_operator(delta_theta_dp > delta_time_dp, delta_theta_dp, delta_time_dp)
+            
+            -- Ammo data
+            muzzle_vel = init.muzzle_vel
+            drag_coef = init.drag_coef
+            caliber = init.caliber
+            count = init.count
+            
+            -- RK4
+            run = true
+            theta = start_theta
+            state = initialize_state(theta, muzzle_vel[1])
+            
+            -- File
+            col = "theta, x, y, time\n"
+            
+            -- Sound
+            process_sound:play()
+            
+            -- Debug
+            total_start_time = os.time()
+        end
+    end)
+    
+    
+    ----- Process -----
+    timer.create("interval", interval, 0, function()
+        -- CPU usage info
+        local cpu_average = this:getQuotaAverage()
+        local cpu_max = this:getQuotaMax()
+        
+        if run and epoch <= count then
+            -- Ammo data
+            local current_muzzle_vel = muzzle_vel[epoch + 1]
+            local current_drag_coef = drag_coef[epoch + 1]
+            local current_caliber = caliber[epoch + 1]
+            
+            -- Create a new file
+            local file_dir, file_name, file_path = get_file_path(current_caliber, current_muzzle_vel, file_idx)
+            if step == 0 then
+                create_file(file_dir, file_path, col)
+                mini_start_time = os.time()
+            end
+            
+            -- Loop
+            while cpu_average < cpu_max * cpu_usage_limit do
+                -- Numerical analysis
+                state = rk4(state, current_drag_coef)
+                local pos = state[1]
+                local time = state[3]
+                
+                local x = pos[1]
+                local y = pos[2]
+                
+                -- Rows to be saved in the file
+                row = row .. tostring(math.round(theta, round)) .. "," .. tostring(x) .. "," .. tostring(y) .. "," .. tostring(math.round(time, round)) .. "\n"
+                
+                -- Row length limitation
+                if string.len(row) >= max_row_string then
+                    row = append_file(file_path, row)
+                end
+                
+                -- Numerical analysis distance limitation
+                if x > max_distance_x or y < max_distance_y then
+                    step = step + 1
+                    theta = theta + delta_theta
+                    state = initialize_state(theta, current_muzzle_vel)
+                    break
+                end
+                
+                -- Create a new file
+                if step >= save_step_point then
+                    step = 0
+                    
+                    file_idx = file_idx + 1
+                    row = append_file(file_path, row)
+                    
+                    local time = get_time(os.time(), mini_start_time)
+                    table.insert(times, time)
+                    print(file_name .. " Saved. Continue writing a new file. / Time: " .. time .. "s")
+                    break
+                end
+                
+                -- Next epoch
+                if theta >= end_theta then
+                    epoch = epoch + 1
+                    step = 0
+                    theta = start_theta
+                    state = initialize_state(theta, current_muzzle_vel)
+                    
+                    file_idx = 0
+                    row = append_file(file_path, row)
+                    
+                    -- End of numerical analysis
+                    if epoch == count then
+                        run = false
+                        row = append_file(file_path, row)
+                        
+                        process_sound:stop()
+                        
+                        local total_time = get_time(os.time(), total_start_time)
+                        print("Completed all of tasks. / Total time: " .. total_time .. "s, " .. total_time/60 .. "min, " .. total_time/60/60 .. "h")
+                    else
+                        local time = 0
+                        for _, val in pairs(times) do
+                            time = time + val
+                        end
+                        
+                        print(file_name .. " Saved. Work on the next epoch. / Average time: " .. time/table.count(times))
+                        table.empty(times)
+                    end
+                    break
+                end
+            end
+            
+            -- Debug
+            send_data("data", {step, theta}, own)
+        end
+    end)
+end
+
+
+-- Made by RuBid / ACF Trajectory Dataset Generator 2.0 / 2024.07.23
+
