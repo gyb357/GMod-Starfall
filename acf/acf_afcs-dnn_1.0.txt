@@ -1,0 +1,220 @@
+--@name ACF FCS-DNN 1.0
+--@author RuBid
+--@shared
+
+
+-- global setting
+local Interval = 0.1
+
+
+-- global constant value
+local Changed = {}
+local Own     = owner()
+
+
+-- global function
+local function send(N, T, P)
+    local Table = {}
+    Table[N]    = T
+    net.start("send")
+    net.writeTable(Table)
+    net.send(P)
+end
+
+local function changed(N, V)
+    local Old  = Changed[N]
+    Changed[N] = V
+    return Old ~= V
+end
+
+
+-- server
+if SERVER then
+    -- constant value
+    local Receive = {}
+    
+    
+    -- wire
+    wire.adjustInputs(
+        {"Base", "Gun", "AimPos", "Arc", "Active"},
+        {"e", "e", "v", "n", "n"}
+    )
+    wire.adjustOutputs(
+        {"FCS", "Th", "ToF"},
+        {"a", "n", "n"}
+    )
+    local Base = wire.ports.Base
+    local Gun  = wire.ports.Gun
+    
+    
+    -- network
+    net.receive("send", function()
+        for N, V in pairs(net.readTable()) do
+            Receive[N] = V
+        end
+    end)
+    
+    
+    -- function
+    local function holoCreate(P, E, S)
+        if hologram.canSpawn() then
+            local H = hologram.create(P, Angle(), "models/holograms/cube.mdl", Vector(S))
+            
+            if isValid(E) then
+                H:setParent(E)
+            end
+            return H
+        else return nil end
+    end
+    
+    local function ternaryOperator(A, B, C)
+        return A and B or C
+    end
+    
+    
+    -- preprocess
+    if isValid(Gun) then
+        M = holoCreate(Gun:getAttachment(1), Gun, 1)
+    end
+    
+    
+    -- run
+    timer.create("Interval", Interval, 0, function()
+        local AimPos = wire.ports.AimPos
+        local Arc    = wire.ports.Arc
+        local Active = wire.ports.Active
+        
+        
+        if isValid(Gun) and isValid(Base) then
+            local V = Gun:acfMuzzleVel()
+            local K = Gun:acfDragCoef()
+            
+            if changed("V", {V}) and changed("K", {K}) and V and K then
+                hook.add("ClientInitialized", "", function(Ply)
+                    if Ply == Own then
+                        send("Initialize", {V, K}, Own)
+                    end
+                end)
+            end
+            
+            
+            local AmM = AimPos - M:getPos()
+            local X   = math.sqrt(AmM[1]^2 + AmM[2]^2)
+            local Y   = -AmM[3]
+            
+            
+            if Active == 1 then
+                send("Data", {X, Y, Arc}, Own)
+            end
+            
+            
+            local Result = Receive["Result"]
+            if Result then
+                local Th       = tonumber(Result[1])
+                local ToF      = tonumber(Result[2])
+                local FCS      = (AimPos - Gun:getPos() - Base:getVelocity()*ToF):getAngle()*Angle(0, 1, 1) + Angle(-Th, 0, 0)
+                wire.ports.FCS = FCS
+                wire.ports.Th  = Th
+                wire.ports.ToF = ToF
+            end
+        end
+    end)
+end
+
+
+if CLIENT and player() == Own then
+    -- constant
+    local Receive = {}
+    local Web     = WebSocket("localhost", 8000, false)
+    local Check   = false
+    Web:connect()
+    
+    
+    -- network
+    net.receive("send", function()
+        for N, V in pairs(net.readTable()) do
+            Receive[N] = V
+        end
+    end)
+    
+    
+    -- function
+    local function isValidNumber(T)
+        if not T or #T == 0 then
+            return false
+        end
+        for _, N in pairs(T) do
+            if N == nil or N == 0 then
+                return false
+            end
+        end
+        return true
+    end
+    
+    function Web:onConnected()
+        print("WebSocket connected: ", self:getState())
+    end
+    
+    function Web:onDisconnected(Err)
+        print("WebSocket disconnected: ", Err, self:getState())
+    end
+    
+    function Web:onMessage(Message)
+        local Split = string.split(Message, ",")
+              Th    = Split[1]
+              ToF   = Split[2]
+    end
+    
+    
+    -- preprocess
+    timer.simple(0.5, function()
+        local Init = Receive["Initialize"]
+        if Init then
+            V     = Init[1]
+            K     = Init[2]
+            Check = isValidNumber({V, K})
+        end
+        if Check == true then
+            Web:write(
+                "Initialize: "
+                .. "V = "
+                .. tostring(V)
+                .. ", K = "
+                .. tostring(K)
+            )
+        end
+    end)
+    
+    
+    -- run
+    timer.create("Interval", Interval, 0, function()
+        if Check == true then
+            local Data = Receive["Data"]
+            if Data then
+                X   = Data[1]
+                Y   = Data[2]
+                Arc = Data[3]
+            end
+            
+            
+            if changed("X", X) or changed("Y", Y) or changed("Arc", Arc) then
+                Web:write(
+                    "Data: "
+                    .. "X = "
+                    .. tostring(X)
+                    .. ", Y = "
+                    .. tostring(Y)
+                    .. ", Arc = "
+                    .. tostring(Arc)
+                )
+            end
+            
+            
+            if Th and ToF then
+                send("Result", {Th, ToF}, Own)
+            end
+        end
+    end)
+end
+
+

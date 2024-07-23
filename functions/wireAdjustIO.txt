@@ -1,8 +1,0 @@
---@name wireAdjustIO
-
-
-local function wireAdjustIO(I, O)
-    wire.adjustInputs(I[1], I[2])
-    wire.adjustOutputs(O[1], O[2])
-end
-

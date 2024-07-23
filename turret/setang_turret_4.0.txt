@@ -1,4 +1,4 @@
---@name SetAng Turret V4
+--@name SetAng Turret V4 FreeAxis
 --@author
 --@shared
 
@@ -6,8 +6,8 @@
 if SERVER then
     // ----- Wire ----- //
     local Inputs = {
-        {"Pod",      "Cam",      "Base",   "Turret", "Gun",    "FCS",   "View",   "Zoom",   "Hold"},
-        {"wirelink", "wirelink", "entity", "entity", "entity", "angle", "number", "number", "number"}
+        {"Pod",      "Cam",      "Base",   "Turret", "TurretAxis", "Gun",    "FCS",   "View",   "Zoom",   "Hold"},
+        {"wirelink", "wirelink", "entity", "entity", "entity",     "entity", "angle", "number", "number", "number"}
     }
     local Outputs = {
         {"FOV",    "AimPos"},
@@ -19,20 +19,21 @@ if SERVER then
     wire.adjustOutputs(Outputs[1], Outputs[2])
     
     
-    local Pod    = wire.ports.Pod
-    local Cam    = wire.ports.Cam
-    local Base   = wire.ports.Base
-    local Turret = wire.ports.Turret
-    local Gun    = wire.ports.Gun
+    local Pod        = wire.ports.Pod
+    local Cam        = wire.ports.Cam
+    local Base       = wire.ports.Base
+    local Turret     = wire.ports.Turret
+    local TurretAxis = wire.ports.TurretAxis
+    local Gun        = wire.ports.Gun
     
     
     // ----- Option ----- //
     local Parent  = 1
     
     
-    local Speed   = 1.0
+    local Speed   = 1
     local AngSet  = {20, 10, 360}
-    local CamSet  = {Vector(0, 0, 100), 300}
+    local CamSet  = {Vector(0, 0, 150), 450}
     local ZoomSet = {80, 10, 3}
     
     
@@ -42,7 +43,7 @@ if SERVER then
         local ZoomScale = (ZoomSet[1] - ZoomSet[2])/ZoomSet[3]
         
         
-        local Spd = Angle(Speed)
+        local Spd = Angle(Speed*2, Speed, 0)
         local Ele = Angle(AngSet[1], AngSet[3]/2, 0)
         local Dep = Angle(AngSet[2], AngSet[3]/2, 0)
         
@@ -99,14 +100,27 @@ if SERVER then
         local P2 = if2(Can, Base,   nil)
         
         
-           Gun:setParent(P1)
-        Turret:setParent(P2)
+        Gun:setParent(Turret)
+        Turret:setParent(TurretAxis)
+        TurretAxis:setParent(Base)
     end
     
     
     // ----- Process ----- //
+    hook.add("tick", "", function()
+        if isValid(TurretAxis) then
+            TurretAxis:setAngles(Angle(0, 0, 0))
+        end
+    end)
+    
     timer.create("Interval", 0, 0, function()
         if isValid(Pod, Cam, Base, Turret, Gun) then
+            local Bvel = Base:getVelocity()
+            local Bavel = Base:getAngleVelocity()
+            local Bang = Base:getAngles()
+            local T = game.getTickInterval()
+            
+            
             Active = Pod["Active"]
             
             
@@ -162,7 +176,7 @@ if SERVER then
                 if Hmod == false then
                     local Eye    = Chair:worldToLocalAngles(Driver:getEyeAngles())
                     local Trace  = trace.trace(CamPos, CamPos + Eye:getForward()*1000000, Gun)
-                          AimPos = Trace["HitPos"]
+                          AimPos = Trace["HitPos"] + (Bvel + Bavel)*T
                         
                         
                     wire.ports.AimPos = AimPos
@@ -172,8 +186,8 @@ if SERVER then
             end
             
             
-            local AmG     = (AimPos - Gun:getPos()):getAngle()
-            local HoldAng = if2(Active == 0, Base:getAngles(), AmG)
+            local AmG     = (AimPos - (Gun:getPos() + (Bvel + Bavel)*T)):getAngle()
+            local HoldAng = if2(Active == 0, (Base:getAngles() + (Bang + Bavel)*T), AmG)
             local GunAng  = if2(Hmod == true, HoldAng, AmG)
             
             

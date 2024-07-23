@@ -1,9 +1,0 @@
---@name send
-
-
-local function send(N, T, P)
-    net.start(N)
-    net.wirteTable(T)
-    net.send(P)
-end
-

@@ -1,0 +1,210 @@
+--@name ACF AFCS-DNN 2.0
+--@author
+--@shared
+--@model models/acf/core/t_computer.mdl
+
+
+----- global constant value -----
+local changeds = {}
+local interval = 0.1
+local own = owner()
+local ply = player()
+
+
+----- global function -----
+local function changed(name, val)
+    local old = changeds[name]
+    changeds[name] = val
+    return old ~= val
+end
+
+local function send(name, tab, ply)
+    local tmp = {}
+    tmp[name] = tab
+    net.start("send")
+    net.writeTable(tmp)
+    net.send(ply)
+end
+
+local function is_valid_entities(tab)
+    if not tab or #tab == 0 then
+        return false
+    end
+    for _, val in pairs(tab) do
+        if not isValid(val) then
+            return false
+        end
+    end
+    return true
+end
+
+local function is_valid_numbers(tab)
+    if not tab or #tab == 0 then
+        return false
+    end
+    for _, val in pairs(tab) do
+        if val == nil or val == 0 then
+            return false
+        end
+    end
+    return true
+end
+
+
+if SERVER then
+    ----- wirelink -----
+    wire.adjustInputs(
+        {"Gun", "Position", "MuzzleVel", "DragCoef", "Indirect", "Calculate"},
+        {"e", "v", "n", "n", "n", "n"}
+    )
+    wire.adjustOutputs(
+        {},
+        {}
+    )
+    
+    
+    ----- constant -----
+    local gun = wire.ports.Gun
+    local receive = {}
+    
+    
+    ----- function -----
+    local function get_base(ent)
+        while isValid(ent:getParent()) do
+            ent = ent:getParent()
+        end
+    end
+    
+    local function create_hologram(pos, scale, parent)
+        if hologram.canSpawn() then
+            local holo = hologram.create(pos, Angle(), "models/holograms/cube.mdl", Vector(scale))
+            
+            if isValid(parent) then
+                holo:setParent(parent)
+            end
+            return holo
+        else
+            return nil
+        end
+    end
+    
+    
+    ----- network -----
+    net.receive("send", function()
+        for name, val in pairs(net.readTable()) do
+            receive[name] = val
+        end
+    end)
+    
+    
+    ----- preprocess -----
+    if isValid(gun) then
+        base = get_base(gun)
+        muzzle = create_hologram(gun:getAttachment(1), 1, gun)
+    end
+    
+    
+    ----- process -----
+    timer.create("interval", interval, 0, function()
+        if is_valid_entities({gun, base, muzzle}) then
+            -- ammo data
+            local muzzle_vel = wire.ports.MuzzleVel
+            local drag_coef = wire.ports.DragCoef
+            
+            -- send ammo data to client
+            if changed("muzzle_vel", muzzle_vel) and changed("drag_coef", drag_coef) and is_valid_numbers({muzzle_vel, drag_coef}) then
+                send("ammo_data", {muzzle_vel, drag_coef}, own)
+            end
+            
+            -- position data
+            local calculate = wire.ports.Calculate
+            if calculate == 1 then
+                local position = wire.ports.Position
+                local indirect = wire.ports.Indirect
+                
+                local loc = position - muzzle:getPos()
+                local x = math.sqrt(loc[1]^2 - loc[2]^2)
+                local y = -loc[3]
+                
+                -- send position data to client
+                send("position_data", {indirect, x, y}, own)
+            end
+        end
+    end)
+end
+
+
+if CLIENT and ply == own then
+    ----- constant -----
+    local receive = {}
+    local web = WebSocket("localhost", 8000, false)
+    local title = "[ACF AFCS-DNN 2.0] "
+    
+    
+    ----- network -----
+    net.receive("send", function()
+        for name, val in pairs(net.readTable()) do
+            receive[name] = val
+        end
+    end)
+    
+    
+    ----- function -----
+    function web:onConnected()
+        print(title, "WebSocket connected: ", self:getState())
+    end
+    
+    function web:onDisconnected(err)
+        print(title, "WebSocket disconnected: ", err, self:getState())
+    end
+    
+    -- receiving data
+    function web:onMessage(message)
+        local split = string.split(message, ",")
+        theta = split[1]
+        tof = split[2]
+    end
+    
+    
+    ----- preprocess -----
+    web:connect()
+    
+    
+    ----- process -----
+    timer.create("interval", interval, 0, function()
+        -- ammo data
+        local ammo_data = receive["ammo_data"]
+        if ammo_data then
+            muzzle_vel = ammo_data[1]
+            drag_coef = ammo_data[2]
+        end
+        
+        -- position data
+        local position_data = receive["position_data"]
+        if position_data then
+            x = position_data[1]
+            y = position_data[2]
+            indirect = position_data[3]
+        end
+        
+        -- send data to python
+        if changed("muzzle_vel", muzzle_vel) or changed("drag_coef", drag_coef) or changed("x", x) or changed("y", y) or changed("indirect", indirect) and is_valid_numbers({muzzle_vel, drag_coef, x, y, indirect}) then
+            web:write(
+                "data"
+                .. tostring(muzzle_Vel)
+                .. tostring(drag_coef)
+                .. tostring(x)
+                .. tostring(y)
+                .. tostring(indirect)
+            )
+        end
+        
+        if theta or tof then
+            send("result", {theta, tof}, own)
+        end
+    end)
+end
+
+
+-- made by RuBid / ACF AFCS-DNN 2.0 / 2024.07.16
+

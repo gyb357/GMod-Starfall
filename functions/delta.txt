@@ -1,6 +1,0 @@
---@name delta
-
-
-local function delta(V1, V2)
-    return V2 - V1
-end

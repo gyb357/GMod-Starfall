@@ -1,0 +1,172 @@
+--@name ACF Recoil Controller 4.0
+--@author RuBid
+--@shared
+--@model models/acf/core/t_gyro.mdl
+
+
+-- This is ACF-3 recoil controller for parented turret (not for axis-based physical turret)
+-- git version: 5bba661
+
+
+if SERVER then
+    ----- setting -----
+    -- recoil force mul (+: increase, -: decrease)
+    local force = 1.0
+    -- print info of mass
+    local debug_mass = true
+    -- draw center of gravity with hologram
+    local debug_cog = true
+    
+    
+    ----- wirelink -----
+    wire.adjustInputs(
+        {"Gun", "Fire"},
+        {"e", "n"}
+    )
+    local gun = wire.ports.Gun
+    
+    
+    ----- constant -----
+    local title = "[ACF Recoil Controller 4.0] "
+    local changeds = {}
+    local meter_to_inch = 39.37 -- 39.3701
+    
+    
+    ----- function -----
+    local function get_base(ent)
+        while isValid(ent:getParent()) do
+            ent = ent:getParent()
+        end
+        return ent
+    end
+    
+    local function get_physics(ent)
+        local tmp = {}
+        
+        for _, v in pairs(ent:getAllConstrained()) do
+            if not isValid(v:getParent()) and v != chip() then
+                table.insert(tmp, v)
+            end
+        end
+        return tmp
+    end
+    
+    local function get_children(ent)
+        local tmp = {}
+        
+        local function recurse(ent)
+            local children = ent:getChildren()
+            
+            for _, v in pairs(children) do
+                table.insert(tmp, v)
+                recurse(v)
+            end
+        end
+        recurse(ent)
+        return tmp
+    end
+    
+    local function get_mass(tab)
+        local mass = 0
+        
+        for _, v in pairs(tab) do
+            if v:isValidPhys() then
+                mass = mass + v:getMass()
+            end
+        end
+        return mass
+    end
+    
+    local function get_center_of_gravity(tab)
+        local moment = Vector()
+        local mass = 0
+        
+        for _, v in pairs(tab) do
+            if v:isValidPhys() then
+                moment = moment + v:getMassCenterW()*v:getMass()
+                mass = mass + v:getMass()
+            end
+        end
+        return moment/mass
+    end
+    
+    local function create_hologram(pos, scale, parent)
+        if hologram.canSpawn() then
+            local holo = holograms.create(pos, Angle(), "models/sprops/misc/axis_plane.mdl", Vector(scale))
+        
+            if isValid(parent) then
+                holo:setParent(parent)
+            end
+            return holo
+        end
+    end
+    
+    local function changed(name, val)
+        local old = changeds[name]
+        changeds[name] = val
+        return old ~= val
+    end
+    
+    local function acf_recoil(ent)
+        local data = ent:acfBulletData()
+        local proj_mass = data["ProjMass"]
+        local muzzle_vel = data["MuzzleVel"]
+        local prop_mass = data["PropMass"]
+        return proj_mass*muzzle_vel*meter_to_inch + prop_mass*meter_to_inch*3000
+    end
+    
+    
+    ----- preprocess -----
+    if isValid(gun) then
+        base = get_base(gun)
+        
+        if debug_mass then
+            local physics = get_physics(base)
+            local parent = get_children(base)
+            
+            local physics_count = table.count(physics)
+            local parent_count = table.count(parent)
+            local total_count = physics_count + parent_count
+            
+            local physics_mass = get_mass(physics)
+            local parent_mass = get_mass(parent)
+            local total_mass = physics_mass + parent_mass
+            print(title, "Physics mass: ", physics_mass, "(", physics_count, ")", "  /  ", "Parent mass: ", parent_mass, "(", parent_count, ")", "  /  ", "Total mass: ", total_mass, "(", total_count, ")")
+            
+            if debug_cog then
+                local cog = create_hologram(get_center_of_gravity(physics), 1, gun)
+                print(title, "Center of gravity position from base: ", base:worldToLocal(cog:getPos()))
+            end
+        end
+    end
+    
+    
+    ----- process -----
+    timer.create("interval", 0, 0, function()
+        local fire = wire.ports.Fire
+        
+        if isValid(gun) then
+            local ammo_count = gun:acfAmmoCount()
+            
+            if changed("fire", fire) and changed("ammo_count", ammo_count) and fire == 1 then
+                local physics = get_physics(base)
+                local parent = get_children(base)
+                local physics_mass = get_mass(physics)
+                local parent_mass = get_mass(parent)
+                local total_mass = physics_mass + parent_mass
+                
+                local ratio = physics_mass/total_mass
+                local local_pos = gun:worldToLocal(get_center_of_gravity(physics))*ratio
+                
+                local recoil = gun:getForward()*acf_recoil(gun)*ratio
+                local offset = gun:localToWorld(local_pos)
+                
+                base:applyForceOffset(-recoil*force, offset)
+            end
+        end
+    end)
+end
+
+
+-- made by RuBid / ACF Recoil Controller 4.0 / 2024.07.10
+

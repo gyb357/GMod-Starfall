@@ -1,0 +1,283 @@
+--@name ACF Ballistics CCIP 3.0
+--@author RuBid
+--@shared
+--@model models/Items/car_battery01.mdl
+
+
+--[[
+    Modifiable lists:
+        Global
+        Interval: Tick interval. (0.0 ~ )
+        
+        
+        CLIENT
+        Dt:     RK4 time step.                      (0.01 ~ )
+        Iter:   Count of iterations per 1 interval. (1 ~ )
+        MaxCPU: Percentage of maximum cpu usage.    (0.1 ~ 0.9)
+]]
+
+
+-- global setting
+local Interval = 0.01
+
+
+-- global constant value (do not modify this.)
+local Changed = {}
+local Own     = owner()
+local Chip    = chip()
+
+
+-- global function
+local function send(N, T, P)
+    local Table = {}
+    Table[N]    = T
+    net.start("send")
+    net.writeTable(Table)
+    net.send(P)
+end
+
+local function changed(N, V)
+    local Old  = Changed[N]
+    Changed[N] = V
+    return Old ~= V
+end
+
+local function ternaryOperator(A, B, C)
+    return A and B or C
+end
+
+
+if SERVER then
+    -- constant value
+    local Receive = {}
+    local Check   = false
+    
+    
+    -- wire
+    wire.adjustInputs(
+        {"Gun", "Target", "Active"},
+        {"e", "e", "n"}
+    )
+    wire.adjustOutputs(
+        {"EndPos", "ToF"},
+        {"v", "n"}
+    )
+    local Gun = wire.ports.Gun
+    
+    
+    -- network
+    net.receive("send", function()
+        for N, V in pairs(net.readTable()) do
+            Receive[N] = V
+        end
+    end)
+    
+    
+    -- preprocess
+    
+    hook.add("ClientInitialized", "", function(Ply)
+        if isValid(Gun) then
+            Check = true
+            if Ply == Own then
+                send("Initialize", {Gun}, Ply)
+            end
+        end
+    end)
+    Chip:setMaterial("phoenix_storms/fender_white")
+    
+    -- run
+    timer.create("Interval", Interval, 0, function()
+        if Check == true then
+            local Target = wire.ports.Target
+            local Active = wire.ports.Active
+            local V      = Gun:acfMuzzleVel()
+            local K      = Gun:acfDragCoef()
+            
+            
+            if changed("Active", Active) then send("Active", Active, Own) end
+            
+            
+            if Active == 1 then
+                if changed("Target", Target) then send("Target", Target, Own) end
+                if changed("V",      V)      then send("V",      V,      Own) end
+                if changed("K",      K)      then send("K",      K,      Own) end
+                
+                
+                local Result = Receive["Result"]
+                if Result then
+                    wire.ports.EndPos = Result[1]
+                    wire.ports.ToF    = Result[2]
+                end
+            end
+        end
+    end)
+end
+
+
+if CLIENT and player() == Own then
+    -- setting
+    local Dt     = 0.01
+    local Iter   = 100
+    local MaxCPU = 0.1
+    
+    
+    -- constant value (do not modify this.)
+    local Receive = {}
+    local G       = Vector(0, 0, physenv.getGravity()[3])
+    local Dt2     = Dt/2
+    local Dt6     = Dt/6
+    local Check   = false
+    local Tick    = game.getTickInterval()
+    local Run     = 0
+    
+    
+    -- network
+    net.receive("send", function()
+        for N, V in pairs(net.readTable()) do
+            Receive[N] = V
+        end
+    end)
+    
+    
+    -- function
+    local function getBaseParent(E)
+        while isValid(E:getParent()) do
+            E = E:getParent()
+        end
+        return E
+    end
+    
+    local function holoCreate(P, E)
+        if hologram.canSpawn() then
+            local H = hologram.create(P, Angle(), "models/holograms/cube.mdl", Vector())
+            
+            if isValid(E) then
+                H:setParent(E)
+            end
+            return H
+        end
+    end
+    
+    local function isValidTable(T)
+        if not T or #T == 0 then
+            return false
+        end
+        for _, V in pairs(T) do
+            if V == nil or not isValid(V) or not V:isValid() then
+                return false
+            end
+        end
+        return true
+    end
+    
+    local function stateInitialized(P, V, F, S)
+        return {P, V*39.37*F + S, 0}
+    end
+    
+    local function rk4(State, K)
+        local P1 = State[1]
+        local V1 = State[2]
+        local T1 = State[3]
+        
+        local Vk = V1:getLength()*K
+        local A1 = G - Vk*V1
+        local V2 = V1 + A1*Dt2
+        local A2 = G - Vk*V2
+        local V3 = V1 + A2*Dt2
+        local A3 = G - Vk*V3
+        local V4 = V1 + A3*Dt
+        local A4 = G - Vk*V4
+        
+        State[1] = P1 + Dt6*(V1 + 2*(V2 + V3) + V4)
+        State[2] = V1 + Dt6*(A1 + 2*(A2 + A3) + A4)
+        State[3] = T1 + Dt
+        return State
+    end
+    
+    local function sqrt(V)
+        return math.sqrt(V[1]^2 + V[2]^2)
+    end
+    
+    
+    -- preprocess
+    timer.simple(0.5, function()
+        local Init = Receive["Initialize"]
+        if Init then
+            Gun = Init[1]
+        end
+        
+        if isValid(Gun) then
+            Base   = getBaseParent(Gun)
+            Muzzle = holoCreate(Gun:getAttachment(1), Gun)
+            
+            if isValidTable({Base, Muzzle}) then
+                Check = true
+            end
+        end
+    end)
+    
+    
+    -- run
+    timer.create("Interval", Interval, 0, function()
+        if Check == true then
+            local Active = Receive["Active"]
+            
+            
+            if Active == 1 then
+                local Target  = Receive["Target"]
+                local V       = Receive["V"]
+                local K       = Receive["K"]
+                local VoB     = Base:getVelocity()
+                local Mpos    = Muzzle:getPos() + VoB*Tick
+                local Fwd     = Gun:getForward()
+                local Average = Chip:getQuotaAverage()
+                local Max     = Chip:getQuotaMax()
+                
+                
+                if not State then
+                    State = stateInitialized(Mpos, V, Fwd, VoB)
+                end
+                
+                
+                if changed("Fwd", Fwd) then Run = 1 end
+                
+                
+                if Run == 1 and Average < Max*MaxCPU then
+                    for _ = 1, Iter do
+                        local Prev  = State
+                              State = rk4(Prev, K)
+                        local Pos   = State[1]
+                        
+                        local Trace  = trace.hull(Prev[1], State[1], Vector(0.1), Vector(0.1), Gun)
+                        local Hit    = Trace.Hit
+                        local HitPos = Trace.HitPos
+                        
+                        if isValid(Target) then
+                            local Tpos = Target:getPos()
+                            local L1   = sqrt(Mpos - Pos)
+                            local L2   = sqrt(Mpos - Tpos)
+                                  End  = ternaryOperator(L1 > L2, true, Hit)
+                        else End = Hit end
+                        
+                        
+                        if End then
+                            EndPos = HitPos
+                            ToF    = State[3]
+                            Run    = 0
+                            State  = stateInitialized(Mpos, V, Fwd, VoB)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    timer.create("send", 0.1, 0, function()
+        if EndPos and ToF then
+            send("Result", {EndPos, ToF}, Own)
+        end
+    end)
+end
+
+
+-- Made by RuBid 2024.02.21
+

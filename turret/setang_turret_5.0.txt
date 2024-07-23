@@ -1,0 +1,203 @@
+--@name SetAng Turret 5.0
+--@author RuBid
+--@shared
+--@model models/engines/emotor-standalone-tiny.mdl
+
+
+--[[
+    Modifiable lists:
+        SERVER
+        Parent:     Apply a patent to a turret.              (1 or 0)
+        Interval:   Tick interval.                           (0.0 ~ )
+        HoldMod:    Hold state.                              (1 or 2)
+        RotateSpd:  Rotation speed.                          (0.0 ~ )
+        AngSet:     Angle limit.                             (Elevation, Depression, Bearing)
+        CollideSet: When you looking backward, lift the gun. (Elevation, Bearing)
+        CamSet:     Position and distance of the cam.        (Position, Distance)
+        ZoomSet:    FOV settings.                            (Min, Max, Count)
+        
+        
+    Initial angle setting:
+        Base:   (0, 90, 0)
+        Turret: (0, 90, 0)
+        Axis:   (0, 0, 0)
+]]
+
+
+if SERVER then
+    -- setting
+    local Parent     = 1
+    local Interval   = 0.0
+    local HoldMod    = 2
+    local RotateSpd  = 1.0
+    local AngSet     = {20, 10, 180}
+    local CollideSet = {0, 135}
+    local CamSet     = {Vector(0, 0, 100), 400}
+    local ZoomSet    = {80, 10, 3}
+    
+    
+    -- constant value (do not modify this.)
+    local Changed = {}
+    local Check   = false
+    local InitAng = Angle(0, 90, 0)
+    local Active  = 0
+    local ZoomS   = (ZoomSet[1] - ZoomSet[2])/ZoomSet[3]
+    local Tick    = game.getTickInterval()
+    local Spd     = Angle(RotateSpd)
+    local Ele     = Angle(AngSet[1], AngSet[3], 0)
+    local Dep     = Angle(AngSet[2], AngSet[3], 0)
+    
+    
+    -- wire
+    wire.adjustInputs(
+        {"Pod", "Cam", "Base", "Turret", "Axis", "Gun", "FCS", "View", "Zoom", "Hold"},
+        {"wirelink", "wirelink", "e", "e", "e", "e", "a", "n", "n", "n"}
+    )
+    wire.adjustOutputs(
+        {"AimPos", "FOV"},
+        {"v", "n"}
+    )
+    local Pod    = wire.ports.Pod
+    local Cam    = wire.ports.Cam
+    local Base   = wire.ports.Base
+    local Turret = wire.ports.Turret
+    local Axis   = wire.ports.Axis
+    local Gun    = wire.ports.Gun
+    
+    
+    -- function
+    local function isValidTable(T)
+        if not T or #T == 0 then
+            return false
+        end
+        for _, V in pairs(T) do
+            if V == nil or not isValid(V) or not V:isValid() then
+                return false
+            end
+        end
+        return true
+    end
+    
+    local function ternaryOperator(A, B, C)
+        return A and B or C
+    end
+    
+    local function ternaryOperator2(A, B, C, D, E)
+        return A and B or ternaryOperator(C, D, E)
+    end
+    
+    local function changed(N, V)
+        local Old  = Changed[N]
+        Changed[N] = V
+        return Old ~= V
+    end
+    
+    local function clamp(V, Min, Max)
+        local X = math.clamp(V[1], Min[1], Max[1])
+        local Y = math.clamp(V[2], Min[2], Max[2])
+        local Z = math.clamp(V[3], Min[3], Max[3])
+        return Angle(X, Y, Z)
+    end
+    
+    
+    -- preprocess
+    if isValidTable({Base, Turret, Axis, Gun}) then
+        Check  = true
+        AimPos = Gun:getPos() + Gun:getForward()*1000000
+        
+        Base:setAngles(InitAng)
+        Turret:setAngles(InitAng)
+        Axis:setAngles(Angle())
+        Gun:setParent(ternaryOperator(   Parent == 1, Turret, nil))
+        Turret:setParent(ternaryOperator(Parent == 1, Axis,   nil))
+        Axis:setParent(ternaryOperator(  Parent == 1, Base,   nil))
+    end
+    chip():setMaterial("phoenix_storms/fender_white")
+    
+    
+    -- run
+    hook.add("tick", "", function()
+        if Check == true then
+            Axis:setAngles(Angle(0))
+        end
+    end)
+    timer.create("Interval", Interval, 0, function()
+        if Check == true and isValid(Pod) and isValid(Cam) then
+            Active = Pod["Active"]
+            
+            
+            local CamPos = Base:getPos() + CamSet[1]
+            if changed("Active", Active) and Active == 1 then
+                Chair  = Pod["Entity"]
+                Driver = Pod["Driver"]
+                FOV    = ZoomSet[1]
+                ZoomI  = 1
+                
+                Cam["Activated"] = 1
+                Cam["Parent"]    = Base
+                Cam["Position"]  = CamPos
+                Cam["Distance"]  = CamSet[2]
+                Cam["FOV"]       = FOV
+                wire.ports.FOV   = FOV
+            end
+            
+            
+            if Active == 1 then
+                      FCS  = wire.ports.FCS
+                local View = wire.ports.View
+                local Zoom = wire.ports.Zoom
+                local Hold = wire.ports.Hold
+                
+                
+                if changed("View", View) and View == 1 then
+                    Vmod            = !Vmod
+                    Dist            = CamSet[2]*ternaryOperator(Vmod == true, 1, 0)
+                    Cam["Distance"] = Dist
+                end
+                if changed("Zoom", Zoom) and Zoom == 1 then
+                    ZoomI          = ZoomI + ternaryOperator(ZoomI > ZoomSet[3] - 1, -ZoomSet[3], 1)
+                    FOV            = ZoomSet[1] - ZoomS*ZoomI
+                    Cam["FOV"]     = FOV
+                    wire.ports.FOV = FOV
+                end
+                if changed("Hold", Hold) and Hold == 1 then
+                    Hmod = !Hmod
+                end
+                
+                
+                if Hmod == false then
+                    local Eye         = Chair:worldToLocalAngles(Driver:getEyeAngles())
+                    local Trace       = trace.trace(CamPos, CamPos + Eye:getForward()*1000000, Gun)
+                    local NextTick    = Base:getVelocity()*Tick
+                          AimPos      = Trace["HitPos"] + NextTick
+                    wire.ports.AimPos = AimPos
+                end
+            else Hmod = true end
+            
+            
+            if Parent == 1 then
+                local AmG     = (AimPos - Gun:getPos()):getAngle()
+                local HoldAng = ternaryOperator2(
+                                    HoldMod == 1, Base:getAngles(),
+                                    HoldMod == 2, AmG,
+                                    Base:getAngles()
+                                )
+                local FCSAng   = ternaryOperator(FCS != Angle(0), FCS, AmG)
+                local GunAng   = ternaryOperator(Hmod == false, FCSAng, HoldAng)
+                local Pitch    = Base:worldToLocalAngles(GunAng)[1]
+                local Yaw      = math.abs(Base:worldToLocalAngles(GunAng)[2])
+                local Collide  = ternaryOperator(Pitch > CollideSet[1] and Yaw > CollideSet[2], Pitch, 0)
+                local SpdClamp = clamp(Gun:worldToLocalAngles(GunAng - Angle(Collide, 0, 0)), -Spd, Spd)
+                local ToWorld  = Gun:localToWorldAngles(SpdClamp)
+                local AngClamp = clamp(Base:worldToLocalAngles(ToWorld), -Ele, Dep)
+                
+                Gun:setAngles(Turret:localToWorldAngles(Angle(AngClamp[1], 0, 0)))
+                Turret:setAngles(Base:localToWorldAngles(Angle(0, AngClamp[2], 0)))
+            end
+        end
+    end)
+end
+
+
+-- Made by RuBid 2024.02.21
+
