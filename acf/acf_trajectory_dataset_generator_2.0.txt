@@ -26,7 +26,7 @@
          - end_theta:          90       Final launch angle.
          - max_distance:       32768    Maximum distance for trajectory calculation.                 (The maximum map size of the source engine is 32768.)
          - cpu_usage_limit:    0.8      Limit for CPU usage to prevent tick quota.                   (Adjust to your computer's performance.)
-         - save_step_point:    500      Number of steps after which data is saved to a file.         (Increment by 1 each time the theta changes. When step reaches this value, save the file and create another.)
+         - save_step_point:    100      Number of steps after which data is saved to a file.         (Increment by 1 each time the theta changes. When step reaches this value, save the file and create another.)
          - max_row_string:     65535    Maximum length of the row string before saving to a file.    (Maximum byte size of a chunk (string length) of data to be memorized.)
         
         
@@ -137,7 +137,7 @@ if CLIENT and ply == own then
     local end_theta = 90
     local max_distance = 32768
     local cpu_usage_limit = 0.8
-    local save_step_point = 500
+    local save_step_point = 100
     local max_row_string = 65535
     
     
@@ -341,7 +341,7 @@ if CLIENT and ply == own then
                 end
                 
                 -- Next epoch
-                if theta >= end_theta then
+                if theta >= end_theta + delta_theta then
                     epoch = epoch + 1
                     step = 0
                     theta = start_theta
@@ -379,5 +379,5 @@ if CLIENT and ply == own then
 end
 
 
--- Made by RuBid / ACF Trajectory Dataset Generator 2.0 / 2024.07.23
+-- Made by RuBid / ACF Trajectory Dataset Generator 2.0 / 2024.07.24
 
