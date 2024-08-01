@@ -1,4 +1,4 @@
---@name ACF Trajectory Dataset Generator 2.0
+--@name ACF Trajectory Dataset Generator 2.1
 --@author RuBid
 --@shared
 --@model models/props_lab/harddrive01.mdl
@@ -16,16 +16,20 @@
          - Data is now stored in chunks. Reduced file write overhead to speed up overall operations.
          - You can generate datasets for multiple ammunition.
         
+           2.1
+         - Added drag coefficient to the filename.
+         - Change the color of the ammo box.
+        
         
     Modifiable settings:
            Name                Default  Description
-         - interval:           0.01     Starfall tick interval.                                      (Adjust to your computer's performance.)
+         - interval:           0.01     Starfall tick interval.                                      (Adjust to your computer performance.)
          - delta_time:         0.01     RK4 time step.                                               (Smaller values increase accuracy and computation time.)
          - delta_theta:        0.01     Angle increment.
          - start_theta:        -90      Initial launch angle.
          - end_theta:          90       Final launch angle.
          - max_distance:       32768    Maximum distance for trajectory calculation.                 (The maximum map size of the source engine is 32768.)
-         - cpu_usage_limit:    0.8      Limit for CPU usage to prevent tick quota.                   (Adjust to your computer's performance.)
+         - cpu_usage_limit:    0.8      Limit for CPU usage to prevent tick quota.                   (Adjust to your computer performance.)
          - save_step_point:    100      Number of steps after which data is saved to a file.         (Increment by 1 each time the theta changes. When step reaches this value, save the file and create another.)
          - max_row_string:     65535    Maximum length of the row string before saving to a file.    (Maximum byte size of a chunk (string length) of data to be memorized.)
         
@@ -97,6 +101,7 @@ if SERVER then
             muzzle_vel = {},
             drag_coef = {},
             caliber = {},
+            entities = {},
             count = table.count(ammo)
         }
         for _, val in pairs(ammo) do
@@ -107,6 +112,8 @@ if SERVER then
                 table.insert(data.drag_coef, tmp[2])
                 table.insert(data.caliber, tmp[3])
             end
+            
+            table.insert(data.entities, val)
         end
         
         hook.add("ClientInitialized", "", function(ply)
@@ -160,6 +167,7 @@ if CLIENT and ply == own then
     local muzzle_vel = 0
     local drag_coef = 0
     local caliber = 0
+    local entities = {}
     local count = 0
     
     -- RK4
@@ -206,8 +214,8 @@ if CLIENT and ply == own then
         return {pos, vel, 0}
     end
     
-    local function get_file_path(caliber, muzzle_vel, idx)
-        local file_dir = math.round(caliber, 1) .. "mm_" .. math.round(muzzle_vel, 1) .. "ms"
+    local function get_file_path(caliber, muzzle_vel, drag_coef, idx)
+        local file_dir = math.round(caliber, 1) .. "mm_" .. math.round(muzzle_vel, 1) .. "ms_" .. drag_coef
         local file_name = file_dir .. "_" .. idx .. ".csv"
         local file_path = file_dir .. "/" .. file_name
         return file_dir, file_name, file_path
@@ -263,6 +271,7 @@ if CLIENT and ply == own then
             muzzle_vel = init.muzzle_vel
             drag_coef = init.drag_coef
             caliber = init.caliber
+            entities = init.entities
             count = init.count
             
             -- RK4
@@ -290,15 +299,25 @@ if CLIENT and ply == own then
         
         if run and epoch <= count then
             -- Ammo data
-            local current_muzzle_vel = muzzle_vel[epoch + 1]
-            local current_drag_coef = drag_coef[epoch + 1]
-            local current_caliber = caliber[epoch + 1]
+            local currunt_epoch = epoch + 1
+            local current_muzzle_vel = muzzle_vel[currunt_epoch]
+            local current_drag_coef = drag_coef[currunt_epoch]
+            local current_caliber = caliber[currunt_epoch]
+            local current_entity = entities[currunt_epoch]
             
-            -- Create a new file
-            local file_dir, file_name, file_path = get_file_path(current_caliber, current_muzzle_vel, file_idx)
             if step == 0 then
+                -- Create a new file
+                local file_dir, file_name, file_path = get_file_path(current_caliber, current_muzzle_vel, current_drag_coef, file_idx)
                 create_file(file_dir, file_path, col)
+                
+                -- Time
                 mini_start_time = os.time()
+                
+                -- Change ammobox color
+                current_entity:setColor(Color(250, 100, 100))
+                if currunt_epoch > 1 then
+                    entities[epoch]:setColor(Color(100, 250, 100))
+                end
             end
             
             -- Loop
@@ -379,5 +398,5 @@ if CLIENT and ply == own then
 end
 
 
--- Made by RuBid / ACF Trajectory Dataset Generator 2.0 / 2024.07.24
+-- Made by RuBid / ACF Trajectory Dataset Generator 2.1 / 2024.08.01
 
